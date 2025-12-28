@@ -89,6 +89,15 @@ public class ItemWrapper implements Cloneable {
     private boolean enchanted;
 
     /**
+     * Real enchantments applied to this item. These enchantments affect both
+     * gameplay mechanics and visual appearance, unless hidden by item flags.
+     * <p>
+     * This collection is managed explicitly by the wrapper and fully rewritten
+     * during each update cycle.
+     */
+    private List<EnchantmentEntry> enchantments;
+
+    /**
      * List of {@link ItemFlag} values that control which aspects of the item
      * metadata are visible in the tooltip. For example, certain flags may hide
      * enchant descriptions, attribute modifiers or unnecessary data.
@@ -97,6 +106,11 @@ public class ItemWrapper implements Cloneable {
      * and whatever flags the item had originally will remain unchanged.
      */
     private List<ItemFlag> flags;
+
+    public record EnchantmentEntry(
+            @NotNull Enchantment enchantment,
+            int level
+    ) {}
 
     /**
      * Creates a new wrapper around the specified {@link ItemStack} and serializer.
@@ -189,10 +203,21 @@ public class ItemWrapper implements Cloneable {
         cachedMeta.lore(displayLore);
         cachedMeta.setCustomModelData(customModelData);
 
-        if (enchanted) {
+        cachedMeta.getEnchants().keySet()
+                .forEach(cachedMeta::removeEnchant);
+
+        if (enchantments != null) {
+            for (EnchantmentEntry entry : enchantments) {
+                cachedMeta.addEnchant(
+                        entry.enchantment(),
+                        entry.level(),
+                        true
+                );
+            }
+        }
+
+        if (enchanted && (enchantments == null || enchantments.isEmpty())) {
             cachedMeta.addEnchant(Enchantment.LURE, 1, true);
-        } else {
-            cachedMeta.removeEnchant(Enchantment.LURE);
         }
 
         if (flags != null) {
@@ -401,6 +426,83 @@ public class ItemWrapper implements Cloneable {
     }
 
     /**
+     * Adds a real enchantment to this item wrapper, which affects both gameplay
+     * mechanics and visual representation in the client. The enchantment will be
+     * applied during the next {@link #update()} call.
+     * <p>
+     * This method ensures the internal enchantment list is initialized if it
+     * does not exist and supports fluent-style chaining for convenient
+     * configuration.
+     * <p>
+     * Note: if {@link #enchanted()} was previously used to apply a cosmetic
+     * glint, it will coexist with real enchantments without duplication.
+     *
+     * @param enchantment the {@link Enchantment} to apply, must not be {@code null}
+     * @param level       the level of the enchantment, typically >= 1
+     * @return this {@link ItemWrapper} instance for fluent chaining
+     * @throws IllegalArgumentException if {@code enchantment} is {@code null}
+     */
+    public ItemWrapper addEnchantment(
+            @NotNull Enchantment enchantment,
+            int level
+    ) {
+
+        if (this.enchantments == null) {
+            this.enchantments = new ArrayList<>();
+        }
+
+        this.enchantments.add(new EnchantmentEntry(enchantment, level));
+        update();
+        return this;
+    }
+
+    /**
+     * Replaces the current set of real enchantments applied to this item wrapper
+     * with the provided list. The change takes effect immediately via a call
+     * to {@link #update()}, ensuring the underlying {@link ItemStack} metadata
+     * is synchronized.
+     * <p>
+     * Passing {@code null} will clear all existing enchantments from the item,
+     * effectively removing any gameplay-affecting or visual enchantment effects.
+     * This method supports fluent-style chaining for concise configuration.
+     * <p>
+     * Use this method when you want to fully control the enchantments on the
+     * item, instead of adding or removing them individually via
+     * {@link #addEnchantment(Enchantment, int)} or
+     * {@link #removeEnchantment(Enchantment)}.
+     *
+     * @param enchantments a {@link List} of {@link EnchantmentEntry} representing
+     *                     the new enchantments to apply, or {@code null} to clear all
+     * @return this {@link ItemWrapper} instance for fluent chaining
+     */
+    public ItemWrapper enchantments(@Nullable List<EnchantmentEntry> enchantments) {
+        this.enchantments = enchantments;
+        update();
+        return this;
+    }
+
+
+    /**
+     * Removes a specific enchantment from this item wrapper. The removal will
+     * take effect during the next {@link #update()} call, ensuring the underlying
+     * {@link ItemStack} metadata reflects the change.
+     * <p>
+     * If the specified enchantment is not present, this method performs no action
+     * and completes silently. The internal enchantment list will be updated
+     * accordingly, and the wrapper remains fully functional for further modifications.
+     *
+     * @param enchantment the {@link Enchantment} to remove, must not be {@code null}
+     * @return this {@link ItemWrapper} instance for fluent chaining
+     */
+    public ItemWrapper removeEnchantment(@NotNull Enchantment enchantment) {
+        if (enchantments != null) {
+            enchantments.removeIf(e -> e.enchantment().equals(enchantment));
+            update();
+        }
+        return this;
+    }
+
+    /**
      * Returns whether this item should visually appear enchanted in-game. This
      * does not necessarily reflect real enchantments applied to the item, and is
      * typically only used to show the enchantment glint.
@@ -558,6 +660,20 @@ public class ItemWrapper implements Cloneable {
         private Integer customModelData;
 
         /**
+         * Internal list of real enchantments applied to the item. Each entry
+         * consists of an {@link Enchantment} and its corresponding level, stored
+         * as an {@link EnchantmentEntry}.
+         * <p>
+         * These enchantments affect both gameplay mechanics and visual representation
+         * in the client. They are applied to the underlying {@link ItemStack} when
+         * {@link #update()} (for ItemWrapper) or {@link #build()} (for Builder) is called.
+         * <p>
+         * This list may be {@code null} if no enchantments have been added, in which
+         * case no real enchantments will be applied.
+         */
+        private List<EnchantmentEntry> enchantments;
+
+        /**
          * Flag controlling whether the built item should visually appear to be
          * enchanted. The effect is purely cosmetic and is used frequently in
          * GUI design to draw player attention.
@@ -654,6 +770,47 @@ public class ItemWrapper implements Cloneable {
         }
 
         /**
+         * Replaces the current list of enchantments in the builder with the provided
+         * list. This will be applied to the {@link ItemWrapper} when {@link #build()}
+         * is called.
+         * <p>
+         * Passing {@code null} clears all enchantments previously added to the builder.
+         * This method supports fluent chaining for concise configuration of complex items.
+         *
+         * @param enchantments a {@link List} of {@link EnchantmentEntry} to set on
+         *                     the resulting item, or {@code null} to clear all
+         * @return this {@link Builder} instance for fluent chaining
+         */
+        public Builder enchantments(@Nullable List<EnchantmentEntry> enchantments) {
+            this.enchantments = enchantments;
+            return this;
+        }
+
+        /**
+         * Adds a single enchantment to the builder's internal list. The enchantment
+         * will be applied to the {@link ItemWrapper} when {@link #build()} is invoked.
+         * <p>
+         * This method ensures the internal list is initialized if it does not exist
+         * and supports fluent-style chaining for readable item configuration.
+         *
+         * @param enchantment the {@link Enchantment} to add, must not be {@code null}
+         * @param level       the level of the enchantment, typically >= 1
+         * @return this {@link Builder} instance for fluent chaining
+         * @throws IllegalArgumentException if {@code enchantment} is {@code null}
+         */
+        public Builder enchantment(
+                @NotNull Enchantment enchantment,
+                int level
+        ) {
+            if (this.enchantments == null) {
+                this.enchantments = new ArrayList<>();
+            }
+            this.enchantments.add(new EnchantmentEntry(enchantment, level));
+            return this;
+        }
+
+
+        /**
          * Defines whether the built item should appear visually enchanted. The
          * resulting {@link ItemWrapper} will store this configuration and apply
          * the appropriate visual effect during metadata updates.
@@ -702,6 +859,7 @@ public class ItemWrapper implements Cloneable {
             wrapper.displayName = displayName;
             wrapper.displayLore = displayLore;
             wrapper.customModelData = customModelData;
+            wrapper.enchantments = enchantments;
             wrapper.enchanted = enchanted;
             wrapper.flags = flags;
             wrapper.update();
